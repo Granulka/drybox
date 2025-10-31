@@ -1,0 +1,154 @@
+Awesome—here’s a **small patch** for the PID/U8g2 sketch I gave you, updated for your wiring (DHT on D8, 6.8 kΩ divider, buzzer on D14/A0) and with short **beeps** on key events.
+
+---
+
+## 1) Replace the config block (pins & DHT & thermistor)
+
+Find the top “DHT / Pins / Thermistor” section and replace with this:
+
+```cpp
+// ======== DHT (wired) ========
+#define USE_DHT 1          // you wired it now
+#define DHT_PIN 8          // D8
+#define DHT_TYPE 11
+#if USE_DHT
+  #include <DHT.h>
+  DHT dht(DHT_PIN, DHT_TYPE);
+#endif
+
+// ======== Pins ========
+const uint8_t PIN_HEATER = 3;    // PWM MOSFET gate (Timer2)
+const uint8_t PIN_FAN    = 5;    // MOSFET gate (ON if heaterPWM>0)
+const uint8_t PIN_BUZZ   = A0;   // D14 (active buzzer recommended)
+const uint8_t BTN_UP     = A1;   // digital-capable (INPUT_PULLUP)
+const uint8_t BTN_DOWN   = A3;   // digital-capable (INPUT_PULLUP)
+const uint8_t BTN_OK     = A6;   // analog-only (needs external 10k pull-up to 5V)
+const uint8_t BTN_BACK   = A7;   // analog-only (needs external 10k pull-up to 5V)
+const uint8_t PIN_THERM  = A2;   // thermistor divider
+
+// ======== Thermistor (you used 6.8k to +5V) ========
+const float R_FIXED      = 6800.0;   // series resistor (ohms)
+const float R_NOMINAL    = 100000.0; // thermistor at 25°C (ohms)
+const float T_NOMINAL_C  = 25.0;     // nominal temp (°C)
+const float BETA         = 3950.0;   // beta coefficient
+const float ADC_MAX      = 1023.0;
+```
+
+> **Divider orientation** (what the code assumes):
+> **5 V — 6.8 k — A2 — NTC — GND** → in `readThermC()` it uses
+> `float R = R_FIXED * (ADC_MAX/adc - 1.0);`
+> If you wired **5 V — NTC — A2 — 6.8 k — GND**, swap that one line to:
+> `float R = R_FIXED / (ADC_MAX/adc - 1.0);`
+
+---
+
+## 2) Add buzzer helper (non-blocking)
+
+Put these **above** `setup()` (anywhere after globals):
+
+```cpp
+// ======== Buzzer (active buzzer) ========
+static unsigned long buzzOffAt = 0;
+inline void buzz(uint16_t ms) {               // start a beep
+  if (ms) { digitalWrite(PIN_BUZZ, HIGH); buzzOffAt = millis() + ms; }
+}
+inline void buzzService() {                    // call every loop
+  if (buzzOffAt && millis() > buzzOffAt) { digitalWrite(PIN_BUZZ, LOW); buzzOffAt = 0; }
+}
+inline void buzzMulti(uint8_t n, uint16_t onMs, uint16_t gapMs) { // quick multi-beep
+  for (uint8_t i=0;i<n;i++){ buzz(onMs); delay(onMs+gapMs); }     // tiny, acceptable delay
+}
+```
+
+> Uses an **active** buzzer. If yours is **passive**, avoid `tone()` (it uses **Timer2** and would break PWM on D3). Either keep short DC beeps (quiet) or move heater PWM to D9/D10 (Timer1) before using `tone()`.
+
+---
+
+## 3) Setup: init buzzer pin
+
+In `setup()` add:
+
+```cpp
+pinMode(PIN_BUZZ, OUTPUT);
+digitalWrite(PIN_BUZZ, LOW);
+```
+
+(Leave the rest of `setup()` as is.)
+
+---
+
+## 4) Call beeps on events
+
+Add the **short beeps** at these places:
+
+* **Menu navigation** (in `case MENU:` after you handle `up`/`dn`):
+
+```cpp
+if (up && sel>0) { sel--; buzz(40); }
+if (dn && sel<NPROF-1) { sel++; buzz(40); }
+```
+
+* **Start run** (in `case MENU:` where you switch to `RUN`):
+
+```cpp
+if (ok){
+  pid.sp = profiles[sel].setC;
+  pid.reset(isnan(tH)? pid.sp : tH);
+  tStart = millis();
+  buzzMulti(2, 60, 60);                 // double-beep on start
+  mode = RUN;
+}
+```
+
+* **Abort (BACK) from RUN to IDLE**:
+
+```cpp
+if (back){ heaterPWM=0; applyOutputs(); buzz(120); mode=IDLE; }
+```
+
+* **Cycle done (left == 0)**:
+
+```cpp
+if (left==0){ heaterPWM=0; applyOutputs(); buzzMulti(3,80,80); mode=DONE; }
+```
+
+* **Enter FAULT** (make sure you beep once when fault is detected):
+
+Add a tiny one-shot in FAULT state:
+
+```cpp
+case FAULT: {
+  static bool faultBeeped=false;
+  heaterPWM=0; applyOutputs();
+  if (!faultBeeped){ buzz(300); faultBeeped=true; }
+  if (back){ faultBeeped=false; mode=IDLE; }
+  // ... your FAULT screen drawing ...
+} break;
+```
+
+* **Service buzzer every loop** (at the **end** of `loop()` before the `delay(40);`):
+
+```cpp
+buzzService();
+```
+
+---
+
+That’s it. With those changes you’re aligned to:
+
+* DHT on **D8 @ 5 V** (`USE_DHT 1`)
+* Thermistor divider using **6.8 kΩ** series to +5 V (set `R_FIXED = 6800.0`)
+* A6/A7 buttons with **external 10 k pull-ups to 5 V** (read analog; code already handles this)
+* Buzzer on **D14/A0** with event beeps
+* Heater PWM on **D3**, fan slaved on **D5**
+
+**Quick hardware double-check**
+
+* Fan MOSFET has **flyback diode** across the fan (cathode to +12 V).
+* MOSFET gates have **~100 Ω series** + **100 k pulldown** to GND.
+* OLED at **3.3 V** with I²C pull-ups to **3.3 V** (often onboard).
+* Common **GND** between 12 V and Arduino.
+* Nano regulator (VIN→5 V) isn’t overheating; 3.3 V draw from OLED < ~50 mA.
+
+If you want, paste your current `.ino` and I’ll apply this patch directly into it and return the full file.
+
