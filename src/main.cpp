@@ -28,6 +28,11 @@
 #include <Adafruit_SSD1306.h>
 #include <DHT.h>
 
+// Project headers
+#include "thermistor.h"
+#include "pid_controller.h"
+#include "safety.h"
+
 // ======== Hardware Configuration ========
 
 // DHT Sensor
@@ -50,18 +55,6 @@ const uint8_t BTN_OK     = A3;   // digital-capable (INPUT_PULLUP)
 const uint8_t BTN_DOWN   = A6;   // analog-only (needs external 10k pull-up to 5V)
 const uint8_t BTN_BACK   = A7;   // analog-only (needs external 10k pull-up to 5V)
 const uint8_t PIN_THERM  = A2;   // thermistor divider
-
-// Thermistor Configuration (6.8k series resistor to +5V)
-// Wiring: 5V --- 6.8k --- A2 --- NTC 100k --- GND
-const float R_FIXED      = 6800.0;   // series resistor (ohms)
-const float R_NOMINAL    = 100000.0; // thermistor at 25°C (ohms)
-const float T_NOMINAL_C  = 25.0;     // nominal temp (°C)
-const float BETA         = 3950.0;   // beta coefficient
-const float ADC_MAX      = 1023.0;
-
-// Safety Limits
-const float MAX_SAFE_TEMP_C = 90.0;
-const unsigned SENSOR_FAULT_SAMPLES = 4;
 
 // Button Debounce
 const unsigned long DEBOUNCE_MS = 30;
@@ -100,76 +93,10 @@ uint32_t tStart = 0;
 Profile activePro;
 
 // ======== PID Controller ========
-struct SimplePID {
-  double sp = 0.0;     // setpoint
-  double Kp = 8.0;     // proportional gain
-  double Ki = 0.04;    // integral gain
-  double Kd = 30.0;    // derivative gain
-  double outMin = 0.0;
-  double outMax = 255.0;
-
-  double integral = 0.0;
-  double lastInput = 0.0;
-  double lastOutput = 0.0;
-  bool initialized = false;
-  unsigned long lastTime = 0;
-  unsigned long sampleTimeMs = 1000;
-
-  void setOutputLimits(double mn, double mx) {
-    outMin = mn;
-    outMax = mx;
-  }
-
-  bool compute(double input, double &out) {
-    unsigned long now = millis();
-    if (!initialized) {
-      lastTime = now;
-      lastInput = input;
-      lastOutput = 0.0;
-      initialized = true;
-      out = lastOutput;
-      return true;
-    }
-
-    unsigned long dtMs = now - lastTime;
-    if (dtMs < sampleTimeMs) {
-      out = lastOutput;
-      return false;
-    }
-
-    double dt = dtMs / 1000.0;
-    double error = sp - input;
-
-    // Integral with anti-windup
-    integral += (Ki * error * dt);
-    if (integral > outMax) integral = outMax;
-    if (integral < outMin) integral = outMin;
-
-    // Derivative on measurement (reduces kick)
-    double dInput = (input - lastInput) / dt;
-
-    double output = Kp * error + integral - Kd * dInput;
-
-    // Clamp output
-    if (output > outMax) output = outMax;
-    if (output < outMin) output = outMin;
-
-    lastOutput = output;
-    lastInput = input;
-    lastTime = now;
-    out = output;
-    return true;
-  }
-
-  void reset(double input, double currentOutput = 0.0) {
-    initialized = false;
-    integral = 0.0;
-    lastInput = input;
-    lastOutput = currentOutput;
-  }
-};
-
 SimplePID pid;
+
+// ======== Safety Monitor ========
+SafetyMonitor safety;
 
 // ======== Buzzer Functions ========
 static unsigned long buzzOffAt = 0;
@@ -234,33 +161,9 @@ bool updateButton(Button &b) {
 }
 
 // ======== Thermistor Reading ========
-bool thermFault = false;
-uint8_t faultStreak = 0;
-
 float readThermC() {
   int adc = analogRead(PIN_THERM);
-
-  if (adc <= 0 || adc >= 1023) {
-    if (++faultStreak >= SENSOR_FAULT_SAMPLES) {
-      thermFault = true;
-    }
-    return NAN;
-  }
-
-  faultStreak = 0;
-  thermFault = false;
-
-  // Calculate resistance: 5V -- R_FIXED -- A2 -- NTC -- GND
-  float R = R_FIXED * (ADC_MAX / adc - 1.0);
-
-  // Steinhart-Hart / Beta equation
-  float steinhart = R / R_NOMINAL;
-  steinhart = log(steinhart);
-  steinhart /= BETA;
-  steinhart += 1.0 / (T_NOMINAL_C + 273.15);
-  steinhart = 1.0 / steinhart;
-
-  return steinhart - 273.15;  // K to C
+  return adcToTemperature(adc);
 }
 
 // ======== Control ========
@@ -467,12 +370,7 @@ void loop() {
   bool back = updateButton(btnBack);
 
   // Safety checks
-  if (!isnan(tH) && tH > MAX_SAFE_TEMP_C) {
-    heaterPWM = 0;
-    applyOutputs();
-    mode = FAULT;
-  }
-  if (thermFault) {
+  if (safety.checkTemperatureFault(tH)) {
     heaterPWM = 0;
     applyOutputs();
     mode = FAULT;
@@ -518,7 +416,7 @@ void loop() {
       // Run PID controller
       if (!isnan(tH)) {
         double out;
-        if (pid.compute(tH, out)) {
+        if (pid.compute(tH, out, millis())) {
           heaterPWM = (int)(out + 0.5);
           if (heaterPWM < 0) heaterPWM = 0;
           if (heaterPWM > 255) heaterPWM = 255;
@@ -575,7 +473,7 @@ void loop() {
         buzz(40);
         mode = IDLE;
       }
-      drawFault(thermFault ? "Thermistor error" : "Overtemperature");
+      drawFault(safety.isThermistorFaulted() ? "Thermistor error" : "Overtemperature");
       break;
     }
   }

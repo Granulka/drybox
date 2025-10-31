@@ -63,7 +63,26 @@ pio run --target upload
 
 # Monitor serial output (optional)
 pio device monitor
+
+# Run automated tests (recommended before upload)
+pio test -e native
 ```
+
+### Testing Before Upload
+
+The project includes comprehensive automated tests for critical hardware control functions:
+
+```bash
+# Run all 33 tests
+pio test -e native
+
+# Tests verify:
+# - Thermistor temperature calculations
+# - PID controller behavior
+# - Safety features (overheat, fault detection)
+```
+
+All tests should pass before uploading firmware to your Arduino.
 
 ### Using the Controller
 
@@ -97,6 +116,16 @@ pio device monitor
 
 For detailed technical documentation, see [claude.md](claude.md)
 
+## Automated Testing
+
+This project includes 33 automated tests covering critical hardware control:
+
+- **Thermistor Tests**: ADC conversion, temperature calculations
+- **PID Tests**: Control algorithm, output limits, anti-windup
+- **Safety Tests**: Overtemperature detection, fault handling
+
+Run tests with: `pio test -e native`
+
 ## Project Structure
 
 ```
@@ -104,6 +133,8 @@ Drybox/
 ├── platformio.ini          # PlatformIO configuration
 ├── src/
 │   └── main.cpp           # Main firmware
+├── include/               # Testable library headers
+├── test/                  # Automated tests (33 tests)
 ├── README.md              # This file
 └── claude.md              # Detailed technical documentation
 ```
