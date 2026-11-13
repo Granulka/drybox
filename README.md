@@ -4,7 +4,11 @@ An Arduino Nano-based filament drybox controller with PID temperature control, O
 
 ![Hardware sketch](docs/hardware-sketch.png)
 
-Photos of the build: [chamber with heater plate and fan](docs/photos/chamber-heater-plate-fan.webp), [controller board](docs/photos/controller-board.webp).
+## Build Photos
+
+| Chamber: heater plate and fan | Controller board |
+|---|---|
+| <img src="docs/photos/chamber-heater-plate-fan.webp" alt="Chamber with heater plate and circulation fan" width="380"> | <img src="docs/photos/controller-board.webp" alt="Controller board with Nano socket, DHT11, buzzer and MOSFETs" width="380"> |
 
 ## Features
 
